@@ -551,8 +551,11 @@ FPGA_TEAM_ROSTER = [
         ),
         "policy": {
             "tools": ["read_file", "write_file", "edit_file", "glob",
+                      "load_skill",
                       "send_message", "submit_plan", "list_tasks",
                       "claim_task", "complete_task"],
+            "allowed_skills": ["fpga-requirements", "fpga-project-flow",
+                               "team-handoff-protocol"],
             "readable_roots": ["."],
             "writable_roots": ["docs"],
         },
@@ -572,8 +575,11 @@ FPGA_TEAM_ROSTER = [
         ),
         "policy": {
             "tools": ["read_file", "write_file", "edit_file", "glob",
+                      "load_skill",
                       "send_message", "submit_plan", "list_tasks",
                       "claim_task", "complete_task"],
+            "allowed_skills": ["fpga-architecture", "roofline-model",
+                               "fpga-project-flow", "team-handoff-protocol"],
             "readable_roots": ["."],
             "writable_roots": ["docs"],
         },
@@ -592,8 +598,11 @@ FPGA_TEAM_ROSTER = [
         ),
         "policy": {
             "tools": ["bash", "read_file", "write_file", "edit_file", "glob",
+                      "load_skill",
                       "send_message", "submit_plan", "list_tasks",
                       "claim_task", "complete_task"],
+            "allowed_skills": ["verilog-rtl", "fpga-project-flow",
+                               "team-handoff-protocol"],
             "readable_roots": ["."],
             "writable_roots": ["rtl", "src", "hdl", "verilog", "ip"],
             "allowed_bash_prefixes": ["dir", "ls", "rg", "find", "type",
@@ -616,8 +625,11 @@ FPGA_TEAM_ROSTER = [
         ),
         "policy": {
             "tools": ["bash", "read_file", "write_file", "edit_file", "glob",
+                      "load_skill",
                       "send_message", "submit_plan", "list_tasks",
                       "claim_task", "complete_task"],
+            "allowed_skills": ["cocotb-verification", "fpga-project-flow",
+                               "team-handoff-protocol"],
             "readable_roots": ["."],
             "writable_roots": ["tests", "test", "sim", "verif", "tb"],
             "allowed_bash_prefixes": ["dir", "ls", "rg", "find", "type",
@@ -662,6 +674,7 @@ def teammate_system_prompt(name: str, role: str, prompt: str,
                            policy: dict) -> str:
     writable = ", ".join(policy.get("writable_roots", ["."]))
     allowed_tools = ", ".join(policy.get("tools", []))
+    allowed_skills = ", ".join(policy.get("allowed_skills", [])) or "(none)"
     return (
         f"You are '{name}', a {role} in a fixed FPGA development team. "
         "Use tools to complete assigned tasks. If a task has a worktree, work "
@@ -670,6 +683,7 @@ def teammate_system_prompt(name: str, role: str, prompt: str,
         f"Role instructions:\n{prompt}\n\n"
         f"Loaded skills:\n{_skill_prompt(skill_names)}\n\n"
         f"Permission scope:\nAllowed tools: {allowed_tools}.\n"
+        f"Allowed load_skill names: {allowed_skills}.\n"
         f"Writable roots relative to the active workspace: {writable}.\n"
         "Do not attempt to read or write outside the active workspace."
     )
@@ -808,6 +822,13 @@ def teammate_permission(block, name: str, policy: dict, cwd: Path | None) -> str
         return f"Permission denied for {name}: tool '{block.name}' is not allowed"
 
     base = cwd or WORKDIR
+    if block.name == "load_skill":
+        skill_name = block.input.get("name", "")
+        allowed_skills = policy.get("allowed_skills", [])
+        if skill_name not in allowed_skills:
+            return (f"Permission denied for {name}: skill '{skill_name}' is not "
+                    f"allowed. Allowed skills: {', '.join(allowed_skills)}")
+
     if block.name == "bash":
         command = block.input.get("command", "")
         for pattern in DENY_LIST:
@@ -927,6 +948,7 @@ def spawn_teammate_thread(name: str, role: str, prompt: str,
             "bash": _run_bash, "read_file": _run_read,
             "write_file": _run_write, "edit_file": _run_edit,
             "glob": _run_glob,
+            "load_skill": load_skill,
             "send_message": lambda to, content: (BUS.send(name, to, content),
                                                   "Sent")[1],
             "list_tasks": _run_list_tasks,
