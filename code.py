@@ -50,7 +50,7 @@ CONTEXT_LIMIT = 50000
 KEEP_RECENT_TOOL_RESULTS = 3
 PERSIST_THRESHOLD = 30000
 CONTINUATION_PROMPT = "Continue from the previous response. Do not repeat completed work."
-PROMPT = "\033[36ms20 >> \033[0m"
+PROMPT = "\033[36mRobit >> \033[0m"
 CLI_ACTIVE = False
 
 
@@ -342,7 +342,7 @@ def load_skill(name: str) -> str:
 # ── Prompt Assembly ──
 
 PROMPT_SECTIONS = {
-    "identity": "You are a coding agent. Act, don't explain.",
+    "identity": "You are a coding agent for FPGA development. Act, don't explain.",
     "tools": "Available tools: bash, read_file, write_file, edit_file, glob, "
              "todo_write, task, load_skill, compact, "
              "create_task, list_tasks, get_task, claim_task, complete_task, "
@@ -2033,7 +2033,7 @@ def cron_autorun_loop(history: list, context: dict):
 
 if __name__ == "__main__":
     CLI_ACTIVE = True
-    print("s20: comprehensive agent")
+    print("robit: A FPGA agent")
     print("Enter a question, press Enter to send. Type q to quit.\n")
     history = []
     context = update_context({}, [])
