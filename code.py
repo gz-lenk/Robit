@@ -347,7 +347,7 @@ PROMPT_SECTIONS = {
              "todo_write, task, load_skill, compact, "
              "create_task, list_tasks, get_task, claim_task, complete_task, "
              "schedule_cron, list_crons, cancel_cron, "
-             "spawn_teammate, send_message, check_inbox, "
+             "spawn_teammate, list_team, send_message, check_inbox, "
              "request_shutdown, request_plan, review_plan, "
              "create_worktree, remove_worktree, keep_worktree, "
              "connect_mcp. MCP tools are prefixed mcp__{server}__{tool}.",
@@ -363,10 +363,17 @@ def assemble_system_prompt(context: dict) -> str:
                 PROMPT_SECTIONS["tools"],
                 PROMPT_SECTIONS["workspace"]]
     sections.append(f"Current time: {datetime.now().isoformat(timespec='seconds')}")
+    sections.append("Fixed FPGA teammate roster:\n" + list_fixed_team() +
+                    "\nPrefer send_message to these fixed teammates for FPGA work "
+                    "instead of spawning ad-hoc teammates. Route work in order: "
+                    "advisor -> architect -> implementer -> tester.")
     sections.append("Skills catalog:\n" + list_skills() +
                     "\nUse load_skill(name) when a skill is relevant.")
     if context.get("memories"):
         sections.append(f"Relevant memories:\n{context['memories']}")
+    if context.get("active_teammates"):
+        sections.append("Active teammates: " +
+                        ", ".join(context["active_teammates"]))
     mcp_names = list(mcp_clients.keys())
     if mcp_names:
         sections.append(f"Connected MCP servers: {', '.join(mcp_names)}")
@@ -501,6 +508,172 @@ class MessageBus:
 BUS = MessageBus()
 active_teammates: dict[str, bool] = {}
 
+
+FPGA_TEAM_SKILLS = {
+    "requirements": (
+        "Clarify FPGA requirements before implementation. Capture clocks, "
+        "resets, interfaces, data widths, protocols, throughput, latency, "
+        "resource goals, target device assumptions, verification criteria, "
+        "and open questions. Produce a concrete requirements document."
+    ),
+    "architecture": (
+        "Turn requirements into hardware architecture. Define modules, "
+        "interfaces, clock/reset domains, pipeline structure, buffering, "
+        "state machines, fixed-point formats, resource tradeoffs, and "
+        "integration risks. Use a roofline model when compute throughput or "
+        "memory bandwidth could constrain the design."
+    ),
+    "rtl": (
+        "Implement synthesizable Verilog/SystemVerilog from the approved "
+        "requirements and design documents. Keep modules small, reset behavior "
+        "explicit, interfaces documented, and avoid testbench-only constructs "
+        "in RTL."
+    ),
+    "verification": (
+        "Build cocotb verification around externally visible behavior. Create "
+        "drivers, monitors, scoreboards, corner-case tests, randomized tests "
+        "where useful, and run simulation when tools are available."
+    ),
+}
+
+
+FPGA_TEAM_ROSTER = [
+    {
+        "name": "advisor",
+        "role": "FPGA requirements advisor",
+        "skills": ["requirements"],
+        "prompt": (
+            "Stand by until the lead assigns FPGA requirements work. "
+            "Communicate with the user through lead messages: ask concise "
+            "clarifying questions when requirements are ambiguous. Once clear, "
+            "write docs/requirements.md with explicit acceptance criteria and "
+            "open questions."
+        ),
+        "policy": {
+            "tools": ["read_file", "write_file", "edit_file", "glob",
+                      "send_message", "submit_plan", "list_tasks",
+                      "claim_task", "complete_task"],
+            "readable_roots": ["."],
+            "writable_roots": ["docs"],
+        },
+        "task_keywords": ["requirement", "requirements", "spec", "clarify",
+                          "advisor", "user", "acceptance"],
+    },
+    {
+        "name": "architect",
+        "role": "FPGA hardware architect",
+        "skills": ["architecture"],
+        "prompt": (
+            "Stand by until the lead assigns FPGA architecture work. Read the "
+            "requirements document first. If throughput, memory bandwidth, or "
+            "parallelism is material, apply a roofline model before selecting "
+            "the architecture. Write docs/design.md with module boundaries, "
+            "interfaces, timing assumptions, and design risks."
+        ),
+        "policy": {
+            "tools": ["read_file", "write_file", "edit_file", "glob",
+                      "send_message", "submit_plan", "list_tasks",
+                      "claim_task", "complete_task"],
+            "readable_roots": ["."],
+            "writable_roots": ["docs"],
+        },
+        "task_keywords": ["architecture", "architect", "design", "roofline",
+                          "microarchitecture", "pipeline", "interface"],
+    },
+    {
+        "name": "implementer",
+        "role": "FPGA RTL implementer",
+        "skills": ["rtl"],
+        "prompt": (
+            "Stand by until the lead assigns RTL work. Read docs/requirements.md "
+            "and docs/design.md before editing RTL. Generate synthesizable "
+            "Verilog/SystemVerilog under rtl/, src/, hdl/, verilog/, or ip/. "
+            "Report assumptions instead of inventing missing interface details."
+        ),
+        "policy": {
+            "tools": ["bash", "read_file", "write_file", "edit_file", "glob",
+                      "send_message", "submit_plan", "list_tasks",
+                      "claim_task", "complete_task"],
+            "readable_roots": ["."],
+            "writable_roots": ["rtl", "src", "hdl", "verilog", "ip"],
+            "allowed_bash_prefixes": ["dir", "ls", "rg", "find", "type",
+                                      "python", "pytest", "make", "iverilog",
+                                      "vvp", "verilator", "yosys"],
+        },
+        "task_keywords": ["rtl", "verilog", "systemverilog", "module",
+                          "implement", "implementation", "logic"],
+    },
+    {
+        "name": "tester",
+        "role": "FPGA cocotb verification engineer",
+        "skills": ["verification"],
+        "prompt": (
+            "Stand by until the lead assigns verification work. Read the "
+            "requirements, design document, and RTL before writing tests. Build "
+            "a cocotb testbench under tests/, test/, sim/, verif/, or tb/. Run "
+            "simulation when the local toolchain is available and report exact "
+            "commands, failures, and coverage gaps."
+        ),
+        "policy": {
+            "tools": ["bash", "read_file", "write_file", "edit_file", "glob",
+                      "send_message", "submit_plan", "list_tasks",
+                      "claim_task", "complete_task"],
+            "readable_roots": ["."],
+            "writable_roots": ["tests", "test", "sim", "verif", "tb"],
+            "allowed_bash_prefixes": ["dir", "ls", "rg", "find", "type",
+                                      "python", "pytest", "make", "iverilog",
+                                      "vvp", "verilator", "cocotb-config"],
+        },
+        "task_keywords": ["test", "tests", "tester", "cocotb", "simulation",
+                          "simulate", "verify", "verification", "tb"],
+    },
+]
+
+
+DEFAULT_TEAMMATE_POLICY = {
+    "tools": ["bash", "read_file", "write_file", "edit_file", "glob",
+              "send_message", "submit_plan", "list_tasks", "claim_task",
+              "complete_task"],
+    "readable_roots": ["."],
+    "writable_roots": ["."],
+    "allowed_bash_prefixes": None,
+}
+
+
+def list_fixed_team() -> str:
+    return "\n".join(
+        f"- {member['name']}: {member['role']}; skills: "
+        f"{', '.join(member.get('skills', []))}; writable: "
+        f"{', '.join(member.get('policy', {}).get('writable_roots', []))}"
+        for member in FPGA_TEAM_ROSTER)
+
+
+def _skill_prompt(skill_names: list[str]) -> str:
+    parts = []
+    for skill_name in skill_names:
+        content = FPGA_TEAM_SKILLS.get(skill_name)
+        if content:
+            parts.append(f"[{skill_name}]\n{content}")
+    return "\n\n".join(parts) if parts else "(no role-specific skills)"
+
+
+def teammate_system_prompt(name: str, role: str, prompt: str,
+                           skill_names: list[str],
+                           policy: dict) -> str:
+    writable = ", ".join(policy.get("writable_roots", ["."]))
+    allowed_tools = ", ".join(policy.get("tools", []))
+    return (
+        f"You are '{name}', a {role} in a fixed FPGA development team. "
+        "Use tools to complete assigned tasks. If a task has a worktree, work "
+        "in that directory. Stay within your role and hand off work to the "
+        "appropriate teammate through send_message when needed.\n\n"
+        f"Role instructions:\n{prompt}\n\n"
+        f"Loaded skills:\n{_skill_prompt(skill_names)}\n\n"
+        f"Permission scope:\nAllowed tools: {allowed_tools}.\n"
+        f"Writable roots relative to the active workspace: {writable}.\n"
+        "Do not attempt to read or write outside the active workspace."
+    )
+
 # ── Protocol State ──
 
 @dataclass
@@ -565,6 +738,7 @@ def scan_unclaimed_tasks() -> list[dict]:
 
 def idle_poll(agent_name: str, messages: list,
               name: str, role: str,
+              task_keywords: list[str] | None = None,
               worktree_context: dict | None = None) -> str:
     # Autonomous teammates wake up for inbox messages first, then look for
     # unclaimed tasks. This keeps direct protocol messages higher priority.
@@ -583,6 +757,14 @@ def idle_poll(agent_name: str, messages: list,
                 "content": "<inbox>" + json.dumps(inbox) + "</inbox>"})
             return "work"
         unclaimed = scan_unclaimed_tasks()
+        if task_keywords:
+            lowered = [kw.lower() for kw in task_keywords]
+            unclaimed = [
+                task for task in unclaimed
+                if any(kw in (task.get("subject", "") + " "
+                              + task.get("description", "")).lower()
+                       for kw in lowered)
+            ]
         if unclaimed:
             task_data = unclaimed[0]
             result = claim_task(task_data["id"], agent_name)
@@ -600,18 +782,77 @@ def idle_poll(agent_name: str, messages: list,
     return "timeout"
 
 
+def _tool_definitions_by_name(names: list[str]) -> list[dict]:
+    teammate_only_tools = [
+        {"name": "submit_plan",
+         "description": "Submit a plan for Lead approval.",
+         "input_schema": {"type": "object",
+                          "properties": {"plan": {"type": "string"}},
+                          "required": ["plan"]}},
+    ]
+    lookup = {tool["name"]: tool for tool in [*BUILTIN_TOOLS, *teammate_only_tools]}
+    return [lookup[name] for name in names if name in lookup]
+
+
+def _path_in_roots(path: Path, base: Path, roots: list[str]) -> bool:
+    for root in roots:
+        root_path = (base / root).resolve()
+        if path == root_path or path.is_relative_to(root_path):
+            return True
+    return False
+
+
+def teammate_permission(block, name: str, policy: dict, cwd: Path | None) -> str | None:
+    allowed_tools = policy.get("tools", [])
+    if block.name not in allowed_tools:
+        return f"Permission denied for {name}: tool '{block.name}' is not allowed"
+
+    base = cwd or WORKDIR
+    if block.name == "bash":
+        command = block.input.get("command", "")
+        for pattern in DENY_LIST:
+            if pattern in command:
+                return f"Permission denied for {name}: '{pattern}' is on the deny list"
+        if any(token in command for token in DESTRUCTIVE):
+            return f"Permission denied for {name}: destructive command requires lead approval"
+        prefixes = policy.get("allowed_bash_prefixes")
+        if prefixes:
+            command_name = command.strip().split()[0].lower() if command.strip() else ""
+            if command_name not in prefixes:
+                return (f"Permission denied for {name}: bash command '{command_name}' "
+                        "is outside this teammate's allowed command set")
+
+    if block.name in ("read_file", "write_file", "edit_file"):
+        path_arg = block.input.get("path", "")
+        try:
+            path = safe_path(path_arg, base)
+        except Exception:
+            return f"Permission denied for {name}: path escapes workspace: {path_arg}"
+        root_key = ("writable_roots" if block.name in ("write_file", "edit_file")
+                    else "readable_roots")
+        roots = policy.get(root_key, ["."])
+        if not _path_in_roots(path, base, roots):
+            return (f"Permission denied for {name}: {path_arg} is outside allowed "
+                    f"{root_key}: {', '.join(roots)}")
+    return None
+
+
 # ── Teammate Thread ──
 
-def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
+def spawn_teammate_thread(name: str, role: str, prompt: str,
+                          *, persistent: bool = False,
+                          skills: list[str] | None = None,
+                          policy: dict | None = None,
+                          task_keywords: list[str] | None = None) -> str:
     if name in active_teammates:
         return f"Teammate '{name}' already exists"
 
     # Plan approval is a real gate: after submit_plan, the teammate stops
     # taking model/tool steps until lead sends plan_approval_response.
     protocol_ctx = {"waiting_plan": None}
-    system = (f"You are '{name}', a {role}. "
-              f"Use tools to complete tasks. "
-              f"If a task has a worktree, work in that directory.")
+    policy = policy or DEFAULT_TEAMMATE_POLICY
+    skills = skills or []
+    system = teammate_system_prompt(name, role, prompt, skills, policy)
 
     def handle_inbox_message(name: str, msg: dict, messages: list):
         msg_type = msg.get("type", "message")
@@ -633,6 +874,7 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
 
     def run():
         wt_ctx = {"path": None}
+        waiting_for_work = persistent
 
         def _wt_cwd():
             # Once a task with a worktree is claimed, all teammate file tools
@@ -640,14 +882,21 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
             p = wt_ctx["path"]
             return Path(p) if p else None
 
-        def _run_bash(command: str) -> str:
+        def _run_bash(command: str, run_in_background: bool = False) -> str:
             return run_bash(command, cwd=_wt_cwd())
 
-        def _run_read(path: str) -> str:
-            return run_read(path, cwd=_wt_cwd())
+        def _run_read(path: str, limit: int | None = None,
+                      offset: int = 0) -> str:
+            return run_read(path, limit=limit, offset=offset, cwd=_wt_cwd())
 
         def _run_write(path: str, content: str) -> str:
             return run_write(path, content, cwd=_wt_cwd())
+
+        def _run_edit(path: str, old_text: str, new_text: str) -> str:
+            return run_edit(path, old_text, new_text, cwd=_wt_cwd())
+
+        def _run_glob(pattern: str) -> str:
+            return run_glob(pattern, cwd=_wt_cwd())
 
         def _run_list_tasks():
             tasks = list_tasks()
@@ -672,52 +921,12 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
             return result
 
         messages = [{"role": "user", "content": prompt}]
-        sub_tools = [
-            {"name": "bash", "description": "Run a shell command.",
-             "input_schema": {"type": "object",
-                              "properties": {"command": {"type": "string"}},
-                              "required": ["command"]}},
-            {"name": "read_file", "description": "Read file.",
-             "input_schema": {"type": "object",
-                              "properties": {"path": {"type": "string"},
-                                             "limit": {"type": "integer"},
-                                             "offset": {"type": "integer"}},
-                              "required": ["path"]}},
-            {"name": "write_file", "description": "Write file.",
-             "input_schema": {"type": "object",
-                              "properties": {"path": {"type": "string"},
-                                             "content": {"type": "string"}},
-                              "required": ["path", "content"]}},
-            {"name": "send_message",
-             "description": "Send message to another agent.",
-             "input_schema": {"type": "object",
-                              "properties": {"to": {"type": "string"},
-                                             "content": {"type": "string"}},
-                              "required": ["to", "content"]}},
-            {"name": "submit_plan",
-             "description": "Submit a plan for Lead approval.",
-             "input_schema": {"type": "object",
-                              "properties": {"plan": {"type": "string"}},
-                              "required": ["plan"]}},
-            {"name": "list_tasks",
-             "description": "List all tasks.",
-             "input_schema": {"type": "object", "properties": {},
-                              "required": []}},
-            {"name": "claim_task",
-             "description": "Claim a pending task.",
-             "input_schema": {"type": "object",
-                              "properties": {"task_id": {"type": "string"}},
-                              "required": ["task_id"]}},
-            {"name": "complete_task",
-             "description": "Mark an in-progress task as completed.",
-             "input_schema": {"type": "object",
-                              "properties": {"task_id": {"type": "string"}},
-                              "required": ["task_id"]}},
-        ]
+        sub_tools = _tool_definitions_by_name(policy.get("tools", []))
 
         sub_handlers = {
             "bash": _run_bash, "read_file": _run_read,
-            "write_file": _run_write,
+            "write_file": _run_write, "edit_file": _run_edit,
+            "glob": _run_glob,
             "send_message": lambda to, content: (BUS.send(name, to, content),
                                                   "Sent")[1],
             "list_tasks": _run_list_tasks,
@@ -726,11 +935,23 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
         }
 
         while True:
-            if len(messages) <= 3:
+            has_identity = (
+                messages and isinstance(messages[0].get("content"), str)
+                and messages[0]["content"].startswith("<identity>")
+            )
+            if not has_identity:
                 messages.insert(0, {"role": "user",
                     "content": f"<identity>You are '{name}', role: {role}. "
                                f"Continue your work.</identity>"})
             should_shutdown = False
+            if persistent and waiting_for_work and not protocol_ctx["waiting_plan"]:
+                idle_result = idle_poll(name, messages, name, role,
+                                        task_keywords, wt_ctx)
+                if idle_result == "shutdown":
+                    break
+                if idle_result == "timeout":
+                    continue
+                waiting_for_work = False
             for _ in range(10):
                 inbox = BUS.read_inbox(name)
                 for msg in inbox:
@@ -759,6 +980,11 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                     break
                 messages.append({"role": "assistant", "content": response.content})
                 if not has_tool_use(response.content):
+                    if persistent:
+                        summary = extract_text(response.content)
+                        if summary:
+                            BUS.send(name, "lead", summary, "result")
+                        waiting_for_work = True
                     break
                 results = []
                 for block in response.content:
@@ -770,9 +996,14 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                             protocol_ctx["waiting_plan"] = (
                                 match.group(1) if match else output)
                         else:
-                            handler = sub_handlers.get(block.name)
-                            output = call_tool_handler(handler, block.input,
-                                                       block.name)
+                            blocked = teammate_permission(
+                                block, name, policy, _wt_cwd())
+                            if blocked:
+                                output = blocked
+                            else:
+                                handler = sub_handlers.get(block.name)
+                                output = call_tool_handler(handler, block.input,
+                                                           block.name)
                         results.append({"type": "tool_result",
                                         "tool_use_id": block.id,
                                         "content": str(output)})
@@ -787,8 +1018,15 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                 break
             if protocol_ctx["waiting_plan"]:
                 continue
-            idle_result = idle_poll(name, messages, name, role, wt_ctx)
-            if idle_result in ("shutdown", "timeout"):
+            idle_result = idle_poll(name, messages, name, role,
+                                    task_keywords, wt_ctx)
+            if idle_result == "shutdown":
+                break
+            if idle_result == "work":
+                waiting_for_work = False
+            if idle_result == "timeout" and persistent:
+                waiting_for_work = True
+            if idle_result == "timeout" and not persistent:
                 break
 
         summary = "Done."
@@ -807,6 +1045,22 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
     active_teammates[name] = True
     threading.Thread(target=run, daemon=True).start()
     return f"Teammate '{name}' spawned as {role}"
+
+
+def ensure_fpga_team_started() -> list[str]:
+    results = []
+    for member in FPGA_TEAM_ROSTER:
+        result = spawn_teammate_thread(
+            member["name"],
+            member["role"],
+            member["prompt"],
+            persistent=True,
+            skills=member.get("skills", []),
+            policy=member.get("policy", DEFAULT_TEAMMATE_POLICY),
+            task_keywords=member.get("task_keywords", []),
+        )
+        results.append(result)
+    return results
 
 
 def _teammate_submit_plan(from_name: str, plan: str) -> str:
@@ -1643,6 +1897,21 @@ def run_complete_task(task_id: str) -> str:
 def run_spawn_teammate(name: str, role: str, prompt: str) -> str:
     return spawn_teammate_thread(name, role, prompt)
 
+
+def run_list_team() -> str:
+    active = set(active_teammates.keys())
+    lines = []
+    for member in FPGA_TEAM_ROSTER:
+        status = "active" if member["name"] in active else "stopped"
+        writable = ", ".join(member["policy"].get("writable_roots", []))
+        tools = ", ".join(member["policy"].get("tools", []))
+        lines.append(
+            f"{member['name']}: {member['role']} [{status}] "
+            f"skills={','.join(member.get('skills', []))} "
+            f"writable={writable} tools={tools}"
+        )
+    return "\n".join(lines)
+
 def run_send_message(to: str, content: str) -> str:
     BUS.send("lead", to, content)
     return f"Sent to {to}"
@@ -1763,6 +2032,9 @@ BUILTIN_TOOLS = [
                                      "role": {"type": "string"},
                                      "prompt": {"type": "string"}},
                       "required": ["name", "role", "prompt"]}},
+    {"name": "list_team",
+     "description": "List fixed FPGA teammates, status, skills, and permissions.",
+     "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "send_message", "description": "Send message to a teammate.",
      "input_schema": {"type": "object",
                       "properties": {"to": {"type": "string"},
@@ -1824,7 +2096,7 @@ BUILTIN_HANDLERS = {
     "schedule_cron": run_schedule_cron,
     "list_crons": run_list_crons,
     "cancel_cron": run_cancel_cron,
-    "spawn_teammate": run_spawn_teammate,
+    "spawn_teammate": run_spawn_teammate, "list_team": run_list_team,
     "send_message": run_send_message, "check_inbox": run_check_inbox,
     "request_shutdown": run_request_shutdown,
     "request_plan": run_request_plan, "review_plan": run_review_plan,
@@ -2037,6 +2309,9 @@ if __name__ == "__main__":
     print("Enter a question, press Enter to send. Type q to quit.\n")
     history = []
     context = update_context({}, [])
+    for result in ensure_fpga_team_started():
+        print(f"  \033[32m[team] {result}\033[0m")
+    context = update_context(context, history)
     threading.Thread(target=cron_autorun_loop,
                      args=(history, context), daemon=True).start()
     while True:
