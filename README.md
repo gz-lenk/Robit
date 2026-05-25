@@ -6,4 +6,6 @@ A LLM Agent for FPGA development
 python ./code.py
 ```
 
+Runtime artifacts and agent-written files are kept under `workspace/`.
+
 ### Costumized Skills

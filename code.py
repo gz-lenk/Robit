@@ -26,17 +26,20 @@ except ImportError:
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+REPO_ROOT = Path(__file__).resolve().parent
+load_dotenv(REPO_ROOT / ".env", override=True)
 if os.getenv("ANTHROPIC_BASE_URL"):
     os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
 
-WORKDIR = Path.cwd()
+WORKDIR = REPO_ROOT / "workspace"
+WORKDIR.mkdir(exist_ok=True)
 client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
 MODEL = os.environ["MODEL_ID"]
 PRIMARY_MODEL = MODEL
 FALLBACK_MODEL = os.getenv("FALLBACK_MODEL_ID")
 
-SKILLS_DIR = WORKDIR / "skills"
+SKILLS_DIR = REPO_ROOT / "skills"
+TOOLS_DIR = REPO_ROOT / "tools"
 TRANSCRIPT_DIR = WORKDIR / ".transcripts"
 TOOL_RESULTS_DIR = WORKDIR / ".task_outputs" / "tool-results"
 
@@ -190,7 +193,7 @@ def validate_worktree_name(name: str) -> str | None:
 
 def run_git(args: list[str]) -> tuple[bool, str]:
     try:
-        r = subprocess.run(["git"] + args, cwd=WORKDIR,
+        r = subprocess.run(["git"] + args, cwd=REPO_ROOT,
                            capture_output=True, text=True, timeout=30)
         out = (r.stdout + r.stderr).strip()
         return r.returncode == 0, out[:5000] if out else "(no output)"
@@ -351,7 +354,7 @@ PROMPT_SECTIONS = {
              "request_shutdown, request_plan, review_plan, "
              "create_worktree, remove_worktree, keep_worktree, "
              "connect_mcp. MCP tools are prefixed mcp__{server}__{tool}.",
-    "workspace": f"Working directory: {WORKDIR}",
+    "workspace": f"Repository root: {REPO_ROOT}\nWorking directory: {WORKDIR}",
     "memory": "Relevant memories are injected below when available.",
 }
 
@@ -1848,9 +1851,14 @@ def connect_mcp(name: str) -> str:
 
 
 def assemble_tool_pool() -> tuple[list[dict], dict]:
-    """Merge builtin tools + all MCP tools into one pool."""
+    """Merge builtin tools, enabled external tools, and all MCP tools."""
     tools = list(BUILTIN_TOOLS)
     handlers = dict(BUILTIN_HANDLERS)
+    for tool_name in ENABLED_EXTERNAL_TOOLS:
+        external = EXTERNAL_TOOLS.get(tool_name)
+        if external:
+            tools.append(external["schema"])
+            handlers[tool_name] = external["handler"]
     for server_name, mcp_client in mcp_clients.items():
         safe_server = normalize_mcp_name(server_name)
         for tool_def in mcp_client.tools:
@@ -1952,6 +1960,63 @@ def run_check_inbox() -> str:
 
 def run_connect_mcp(name: str) -> str:
     return connect_mcp(name)
+
+
+def run_vitis_timming_analyzer(top: str, rtl: list[str],
+                               xdc: list[str] | None = None,
+                               out_dir: str = "build/vitis_timing",
+                               strategies: str = "default",
+                               jobs: int | None = None,
+                               dry_run: bool = False) -> str:
+    script = TOOLS_DIR / "vitis_timming_analyzer" / "vitis_timing_analyzer.py"
+    command = [sys.executable, str(script), "--top", top, "--out-dir", out_dir,
+               "--strategies", strategies]
+    if jobs is not None:
+        command.extend(["--jobs", str(jobs)])
+    if dry_run:
+        command.append("--dry-run")
+    command.append("--rtl")
+    command.extend(rtl)
+    if xdc:
+        command.append("--xdc")
+        command.extend(xdc)
+    try:
+        r = subprocess.run(command, cwd=WORKDIR, capture_output=True,
+                           text=True, timeout=None)
+        out = (r.stdout + r.stderr).strip()
+        return out[:50000] if out else f"Exited with {r.returncode}"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+EXTERNAL_TOOLS = {
+    "vitis_timming_analyzer": {
+        "schema": {
+            "name": "vitis_timming_analyzer",
+            "description": (
+                "Run optional Vitis/Vivado timing analysis on RTL for Alveo V80 "
+                "at 400MHz. Disabled by default; enable only when requested."
+            ),
+            "input_schema": {"type": "object",
+                             "properties": {
+                                 "top": {"type": "string"},
+                                 "rtl": {"type": "array",
+                                         "items": {"type": "string"}},
+                                 "xdc": {"type": "array",
+                                         "items": {"type": "string"}},
+                                 "out_dir": {"type": "string"},
+                                 "strategies": {"type": "string"},
+                                 "jobs": {"type": "integer"},
+                                 "dry_run": {"type": "boolean"}},
+                             "required": ["top", "rtl"]},
+        },
+        "handler": run_vitis_timming_analyzer,
+    },
+}
+
+# External tools are registered above but not exposed to the model until a user
+# intentionally enables them and grants teammate policy access.
+ENABLED_EXTERNAL_TOOLS: set[str] = set()
 
 
 # ── Tool Definitions ──

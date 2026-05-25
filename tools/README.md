@@ -2,7 +2,7 @@
 
 ## Vitis Timing Analyzer
 
-`vitis_timing_analyzer.py` is an optional external tool for FPGA timing exploration. It does not run automatically and is not registered in `code.py` by default.
+`vitis_timming_analyzer/` is an optional external tool package for FPGA timing exploration. It does not run automatically and is registered in `code.py` as disabled by default.
 
 Default synthesis assumptions:
 
@@ -13,15 +13,15 @@ Default synthesis assumptions:
 
 The tool uses a Python wrapper plus a Vivado/Vitis Tcl worker:
 
-- `vitis_timing_analyzer.py`: validates inputs, runs one or more synthesis strategies in parallel, and combines reports.
-- `vitis_timing_analyzer.tcl`: runs synthesis/place/route, emits timing reports, extracts critical path logic levels, and lists high-fanout nets.
+- `vitis_timming_analyzer/vitis_timing_analyzer.py`: validates inputs, runs one or more synthesis strategies in parallel, and combines reports.
+- `vitis_timming_analyzer/vitis_timing_analyzer.tcl`: runs synthesis/place/route, emits timing reports, extracts critical path logic levels, and lists high-fanout nets.
 
 This split is preferred over a Tcl-only implementation because Python is better for CLI parsing, parallel strategy sweeps, output organization, and report post-processing, while Tcl stays focused on commands that must run inside Vivado.
 
 Dry run:
 
 ```powershell
-python tools\vitis_timing_analyzer.py `
+python tools\vitis_timming_analyzer\vitis_timing_analyzer.py `
   --top my_top `
   --rtl rtl `
   --dry-run
@@ -30,7 +30,7 @@ python tools\vitis_timing_analyzer.py `
 Run with Vivado available on `PATH`:
 
 ```powershell
-python tools\vitis_timing_analyzer.py `
+python tools\vitis_timming_analyzer\vitis_timing_analyzer.py `
   --top my_top `
   --rtl rtl `
   --xdc constraints\top.xdc `
@@ -42,7 +42,7 @@ python tools\vitis_timing_analyzer.py `
 Override defaults when needed:
 
 ```powershell
-python tools\vitis_timing_analyzer.py `
+python tools\vitis_timming_analyzer\vitis_timing_analyzer.py `
   --top my_top `
   --rtl rtl `
   --part xcvu9p-flga2104-2L-e `
@@ -52,8 +52,8 @@ python tools\vitis_timing_analyzer.py `
 
 Agent integration:
 
-- The tool is not currently exposed to the main agent or any teammate.
-- When timing closure work is needed, register a wrapper in `code.py`, add the tool schema to `BUILTIN_TOOLS`, map it in `BUILTIN_HANDLERS`, and add the tool name to tester's policy.
+- The tool is registered in `code.py` as an external tool but is disabled by default.
+- When timing closure work is needed, enable it in `ENABLED_EXTERNAL_TOOLS` and add the tool name to tester's policy.
 - Keep it disabled by default because normal environments usually do not have Vivado/Vitis or V80 board files installed.
 
 Main outputs:
