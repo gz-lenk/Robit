@@ -235,3 +235,5 @@ analysis/
 analysis_progress.md
 
 .env
+docs/
+datasets/
